@@ -97,3 +97,61 @@ pub struct Token {
     pub address: String,
 }
 
+impl Token {
+    pub fn new(symbol: &str, chain: Chain, decimals: u8, address: &str) -> Self {
+        Self {
+            symbol: symbol.to_string(),
+            chain,
+            decimals,
+            address: address.to_string(),
+        }
+    }
+
+    pub fn is_stablecoin(&self) -> bool {
+        let sym = self.symbol.to_uppercase();
+        sym == "USDC" || sym == "USDT" || sym == "DAI" || sym == "BUSD" || sym == "FRAX"
+    }
+
+    pub fn is_native(&self) -> bool {
+        let sym = self.symbol.to_uppercase();
+        match self.chain {
+            Chain::Ethereum | Chain::Arbitrum | Chain::Base | Chain::Optimism => sym == "ETH",
+            Chain::Solana => sym == "SOL",
+            Chain::Polygon => sym == "MATIC" || sym == "POL",
+            Chain::BnbChain => sym == "BNB",
+            Chain::Avalanche => sym == "AVAX",
+        }
+    }
+
+    pub fn amount_from_human(&self, human_amount: f64) -> u128 {
+        let factor = 10u128.pow(self.decimals as u32);
+        (human_amount * factor as f64) as u128
+    }
+
+    pub fn amount_to_human(&self, raw_amount: u128) -> f64 {
+        let factor = 10u128.pow(self.decimals as u32);
+        raw_amount as f64 / factor as f64
+    }
+}
+
+/// A complete route from source to destination.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Route {
+    pub hops: Vec<RouteHop>,
+    pub expected_output: f64,
+    pub guaranteed_minimum: f64,
+    pub total_fees: f64,
+    pub estimated_time: u64,
+    pub minimax_score: f64,
+}
+
+impl Route {
+    pub fn new() -> Self {
+        Self {
+            hops: Vec::new(),
+            expected_output: 0.0,
+            guaranteed_minimum: 0.0,
+            total_fees: 0.0,
+            estimated_time: 0,
+            minimax_score: 0.0,
+        }
