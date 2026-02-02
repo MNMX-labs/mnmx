@@ -387,3 +387,94 @@ impl MevDetector {
         {
             return true;
         }
+
+        false
+    }
+
+    /// Combine multiple signals into a single probability using a
+    /// logistic combination.
+    ///
+    /// Each signal is in [0, 1]. The combination:
+    /// 1. Compute the weighted sum of log-odds
+    /// 2. Pass through logistic function
+    ///
+    /// This ensures the output is always in (0, 1) and combines
+    /// evidence from multiple independent signals.
+    pub fn calculate_probability(signals: &[f64]) -> f64 {
+        if signals.is_empty() {
+            return 0.0;
+        }
+
+        // Convert each signal to log-odds, sum, then back to probability
+        let mut log_odds_sum = 0.0;
+        let mut valid_count = 0;
+
+        for &signal in signals {
+            let clamped = math::clamp_f64(signal, 0.01, 0.99);
+            let log_odds = (clamped / (1.0 - clamped)).ln();
+            log_odds_sum += log_odds;
+            valid_count += 1;
+        }
+
+        if valid_count == 0 {
+            return 0.0;
+        }
+
+        // Average the log-odds to prevent extreme values
+        let avg_log_odds = log_odds_sum / valid_count as f64;
+
+        // Apply logistic to get back to probability
+        math::logistic(avg_log_odds)
+    }
+}
+
+impl Default for MevDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_pool() -> PoolState {
+        PoolState::new("pool1", 10_000_000, 20_000_000, 30, "SOL", "USDC")
+    }
+
+    fn test_swap(amount: u64) -> ExecutionAction {
+        ExecutionAction::new(ActionKind::Swap, "SOL", amount, "USDC", 50, "pool1", 5000)
+    }
+
+    #[test]
+    fn test_is_known_mev_bot() {
+        assert!(MevDetector::is_known_mev_bot("MEVbot123"));
+        assert!(MevDetector::is_known_mev_bot("JUPaggregator"));
+        assert!(MevDetector::is_known_mev_bot("my_mev_program"));
+        assert!(MevDetector::is_known_mev_bot("sandwich_attacker"));
+        assert!(!MevDetector::is_known_mev_bot("normalUser123"));
+        assert!(!MevDetector::is_known_mev_bot("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"));
+    }
+
+    #[test]
+    fn test_no_threats_for_transfer() {
+        let detector = MevDetector::new();
+        let action = ExecutionAction::new(
+            ActionKind::Transfer,
+            "SOL",
+            1000,
+            "wallet2",
+            0,
+            "",
+            5000,
+        );
+        let state = OnChainState::new(100, 1700000000);
+        let threats = detector.detect_threats(&action, &state);
+        assert!(threats.is_empty());
+    }
+
+    #[test]
+    fn test_sandwich_detection_large_trade() {
+        let detector = MevDetector::new();
+        let pool = test_pool();
+        let action = test_swap(500_000); // 5% of reserve
