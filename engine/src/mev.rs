@@ -267,3 +267,123 @@ impl MevDetector {
         let cost = action.amount / 500;
 
         let source = watchers[0].from.clone();
+
+        Some(MevThreat::new(
+            MevKind::Backrun,
+            probability,
+            cost,
+            &source,
+            &action.pool_address,
+        ))
+    }
+
+    /// Analyze JIT (Just-In-Time) liquidity risk.
+    ///
+    /// JIT liquidity providers add concentrated liquidity right before a
+    /// large swap and remove it immediately after, capturing most of the
+    /// trading fees while diluting existing LPs.
+    pub fn analyze_jit_risk(
+        &self,
+        action: &ExecutionAction,
+        pool: &PoolState,
+    ) -> Option<MevThreat> {
+        if action.kind != ActionKind::Swap {
+            return None;
+        }
+
+        // JIT is profitable when the swap fee income exceeds the JIT gas cost
+        let fee_income = math::bps_to_decimal(pool.fee_rate_bps) * action.amount as f64;
+
+        // If the fee income is less than ~10_000 lamports, JIT isn't worth it
+        if fee_income < 10_000.0 {
+            return None;
+        }
+
+        // Signal 1: swap fee income potential
+        let fee_signal = math::clamp_f64(fee_income / 100_000.0, 0.0, 1.0);
+
+        // Signal 2: trade size relative to pool liquidity
+        let size_signal = if pool.reserve_a > 0 {
+            math::clamp_f64(
+                action.amount as f64 / pool.reserve_a as f64 * 5.0,
+                0.0,
+                1.0,
+            )
+        } else {
+            0.0
+        };
+
+        // Signal 3: pool has concentrated liquidity features (sqrt_price > 0)
+        let cl_signal = if pool.sqrt_price > 0 { 0.6 } else { 0.2 };
+
+        let signals = vec![fee_signal, size_signal, cl_signal];
+        let probability = Self::calculate_probability(&signals) * self.sensitivity;
+        let probability = math::clamp_f64(probability, 0.0, 0.90);
+
+        // JIT cost to the victim = portion of fees captured by the JIT provider
+        let cost = (fee_income * 0.8) as u64; // JIT captures ~80% of fees
+
+        Some(MevThreat::new(
+            MevKind::JitLiquidity,
+            probability,
+            cost,
+            "jit_provider",
+            &pool.address,
+        ))
+    }
+
+    /// Estimate the cost of a sandwich attack on a given swap.
+    ///
+    /// The sandwich profit ≈ price_impact * amount * multiplier.
+    /// The victim bears this as additional slippage.
+    pub fn estimate_sandwich_cost(action_amount: u64, pool: &PoolState) -> u64 {
+        let impact = math::calculate_price_impact(
+            action_amount,
+            pool.reserve_a,
+            pool.reserve_b,
+        );
+        // Sandwich extracts roughly 2x the price impact as profit
+        let cost = action_amount as f64 * impact * 2.0;
+        if cost > u64::MAX as f64 {
+            u64::MAX
+        } else {
+            cost as u64
+        }
+    }
+
+    /// Estimate the cost of a front-run to the agent.
+    ///
+    /// The front-runner captures the price improvement that the agent
+    /// would have received.
+    pub fn estimate_frontrun_cost(action: &ExecutionAction, competing_tx: &PendingTx) -> u64 {
+        // Cost ≈ the amount of price improvement stolen
+        // Heuristic: proportional to the competing tx amount relative to ours
+        let ratio = if action.amount > 0 {
+            competing_tx.amount as f64 / action.amount as f64
+        } else {
+            1.0
+        };
+        let cost = action.amount as f64 * ratio.min(1.0) * 0.01; // ~1% cost
+        cost as u64
+    }
+
+    /// Check if an address matches known MEV bot patterns.
+    pub fn is_known_mev_bot(address: &str) -> bool {
+        // Check prefixes
+        for prefix in KNOWN_MEV_PREFIXES {
+            if address.starts_with(prefix) {
+                return true;
+            }
+        }
+
+        // Check for common bot naming patterns (case-insensitive)
+        let lower = address.to_lowercase();
+        if lower.contains("bot")
+            || lower.contains("mev")
+            || lower.contains("arb")
+            || lower.contains("sniper")
+            || lower.contains("sandwich")
+            || lower.contains("flash")
+        {
+            return true;
+        }
