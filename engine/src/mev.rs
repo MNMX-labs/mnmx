@@ -195,3 +195,75 @@ impl MevDetector {
 
         // Signal 1: number of competing high-fee transactions
         let count_signal = math::clamp_f64(competing.len() as f64 * 0.2, 0.0, 1.0);
+
+        // Signal 2: fee premium of competing transactions
+        let max_competing_fee = competing.iter().map(|tx| tx.fee).max().unwrap_or(0);
+        let fee_ratio = if action.priority_fee > 0 {
+            max_competing_fee as f64 / action.priority_fee as f64
+        } else {
+            5.0 // High signal if our fee is zero
+        };
+        let fee_signal = math::clamp_f64((fee_ratio - 1.0) * 0.5, 0.0, 1.0);
+
+        // Signal 3: known bots
+        let bot_count = competing
+            .iter()
+            .filter(|tx| Self::is_known_mev_bot(&tx.from))
+            .count();
+        let bot_signal = math::clamp_f64(bot_count as f64 * 0.4, 0.0, 1.0);
+
+        let signals = vec![count_signal, fee_signal, bot_signal];
+        let probability = Self::calculate_probability(&signals) * self.sensitivity;
+        let probability = math::clamp_f64(probability, 0.0, 0.99);
+
+        let cost = Self::estimate_frontrun_cost(action, competing[0]);
+
+        let source = competing[0].from.clone();
+
+        Some(MevThreat::new(
+            MevKind::Frontrun,
+            probability,
+            cost,
+            &source,
+            &action.pool_address,
+        ))
+    }
+
+    /// Analyze back-running risk.
+    ///
+    /// Back-running occurs when a bot submits a transaction immediately
+    /// after the victim's transaction to profit from the price movement.
+    pub fn analyze_backrun_risk(
+        &self,
+        action: &ExecutionAction,
+        pending_txs: &[PendingTx],
+    ) -> Option<MevThreat> {
+        if action.kind != ActionKind::Swap {
+            return None;
+        }
+
+        // Back-runners watch for large swaps that create arbitrage opportunities
+        // Check if there are pending txs from known bots
+        let watchers: Vec<&PendingTx> = pending_txs
+            .iter()
+            .filter(|tx| Self::is_known_mev_bot(&tx.from))
+            .collect();
+
+        if watchers.is_empty() {
+            return None;
+        }
+
+        // Signal 1: number of watching bots
+        let watcher_signal = math::clamp_f64(watchers.len() as f64 * 0.15, 0.0, 1.0);
+
+        // Signal 2: action amount (larger = more backrun profit)
+        let amount_signal = math::clamp_f64(action.amount as f64 / 1_000_000.0, 0.0, 1.0);
+
+        let signals = vec![watcher_signal, amount_signal];
+        let probability = Self::calculate_probability(&signals) * self.sensitivity;
+        let probability = math::clamp_f64(probability, 0.0, 0.95);
+
+        // Backrun cost is typically lower than sandwich
+        let cost = action.amount / 500;
+
+        let source = watchers[0].from.clone();
