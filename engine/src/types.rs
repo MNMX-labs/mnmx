@@ -307,3 +307,141 @@ impl PendingTx {
         self.fee > other.fee
     }
 }
+
+/// The result of evaluating a position/action pair.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvaluationResult {
+    pub score: f64,
+    pub breakdown: EvalBreakdown,
+    pub confidence: f64,
+}
+
+impl EvaluationResult {
+    pub fn zero() -> Self {
+        Self {
+            score: 0.0,
+            breakdown: EvalBreakdown::zero(),
+            confidence: 0.0,
+        }
+    }
+}
+
+/// Detailed breakdown of an evaluation score.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalBreakdown {
+    pub gas_cost: f64,
+    pub slippage_impact: f64,
+    pub mev_exposure: f64,
+    pub profit_potential: f64,
+}
+
+impl EvalBreakdown {
+    pub fn zero() -> Self {
+        Self {
+            gas_cost: 0.0,
+            slippage_impact: 0.0,
+            mev_exposure: 0.0,
+            profit_potential: 0.0,
+        }
+    }
+
+    /// Sum of all component scores (unsigned for inspection).
+    pub fn total_magnitude(&self) -> f64 {
+        self.gas_cost.abs()
+            + self.slippage_impact.abs()
+            + self.mev_exposure.abs()
+            + self.profit_potential.abs()
+    }
+}
+
+/// Configuration for the minimax search.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchConfig {
+    pub max_depth: u32,
+    pub alpha_beta_enabled: bool,
+    pub time_limit_ms: u64,
+    pub eval_weights: EvalWeights,
+    pub transposition_enabled: bool,
+    pub move_ordering_enabled: bool,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            max_depth: 6,
+            alpha_beta_enabled: true,
+            time_limit_ms: 2000,
+            eval_weights: EvalWeights::default(),
+            transposition_enabled: true,
+            move_ordering_enabled: true,
+        }
+    }
+}
+
+impl SearchConfig {
+    pub fn fast() -> Self {
+        Self {
+            max_depth: 3,
+            time_limit_ms: 500,
+            ..Self::default()
+        }
+    }
+
+    pub fn deep() -> Self {
+        Self {
+            max_depth: 10,
+            time_limit_ms: 10000,
+            ..Self::default()
+        }
+    }
+}
+
+/// Weight multipliers for each evaluation component.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalWeights {
+    pub gas: f64,
+    pub slippage: f64,
+    pub mev: f64,
+    pub profit: f64,
+}
+
+impl Default for EvalWeights {
+    fn default() -> Self {
+        Self {
+            gas: 1.0,
+            slippage: 1.5,
+            mev: 2.0,
+            profit: 3.0,
+        }
+    }
+}
+
+impl EvalWeights {
+    /// Combine an eval breakdown into a single weighted score.
+    pub fn combine(&self, b: &EvalBreakdown) -> f64 {
+        b.gas_cost * self.gas
+            + b.slippage_impact * self.slippage
+            + b.mev_exposure * self.mev
+            + b.profit_potential * self.profit
+    }
+}
+
+/// The final output of a search: an ordered plan of actions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionPlan {
+    pub actions: Vec<ExecutionAction>,
+    pub expected_score: f64,
+    pub total_cost: u64,
+    pub search_stats: SearchStats,
+}
+
+impl ExecutionPlan {
+    pub fn empty(stats: SearchStats) -> Self {
+        Self {
+            actions: Vec::new(),
+            expected_score: 0.0,
+            total_cost: 0,
+            search_stats: stats,
+        }
+    }
+}
