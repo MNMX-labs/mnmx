@@ -71,3 +71,79 @@ impl SearchStatistics {
         self.total_children_generated += count;
         self.total_interior_nodes += 1;
     }
+
+    /// Convert accumulated stats into the public SearchStats type.
+    pub fn to_search_stats(&self) -> SearchStats {
+        let total_time: u64 = self
+            .depths_completed
+            .last()
+            .map(|(_, t)| *t)
+            .unwrap_or(0);
+
+        SearchStats {
+            nodes_explored: self.nodes_visited,
+            nodes_pruned: self.nodes_pruned,
+            max_depth_reached: self.max_depth_reached,
+            time_ms: total_time,
+            tt_hits: self.tt_hits,
+            tt_misses: self.tt_misses,
+            branching_factor: self.effective_branching_factor(),
+        }
+    }
+
+    /// Fraction of explored nodes that were pruned.
+    pub fn pruning_rate(&self) -> f64 {
+        let total = self.nodes_visited + self.nodes_pruned;
+        if total == 0 {
+            0.0
+        } else {
+            self.nodes_pruned as f64 / total as f64
+        }
+    }
+
+    /// Throughput: nodes explored per millisecond of search time.
+    pub fn nodes_per_second(&self, elapsed_ms: u64) -> f64 {
+        if elapsed_ms == 0 {
+            return self.nodes_visited as f64;
+        }
+        (self.nodes_visited as f64 / elapsed_ms as f64) * 1000.0
+    }
+
+    /// Effective branching factor: average number of children per interior node.
+    pub fn effective_branching_factor(&self) -> f64 {
+        if self.total_interior_nodes == 0 {
+            return 0.0;
+        }
+        self.total_children_generated as f64 / self.total_interior_nodes as f64
+    }
+
+    /// Number of times the best move changed (instability indicator).
+    pub fn best_move_changes(&self) -> u32 {
+        self.best_move_changes
+    }
+
+    /// Total nodes visited.
+    pub fn total_nodes(&self) -> u64 {
+        self.nodes_visited
+    }
+
+    /// Total nodes pruned.
+    pub fn total_pruned(&self) -> u64 {
+        self.nodes_pruned
+    }
+
+    /// Time profile: how long each depth took.
+    pub fn depth_times(&self) -> &[(u32, u64)] {
+        &self.depths_completed
+    }
+
+    /// TT hit rate.
+    pub fn tt_hit_rate(&self) -> f64 {
+        let total = self.tt_hits + self.tt_misses;
+        if total == 0 {
+            0.0
+        } else {
+            self.tt_hits as f64 / total as f64
+        }
+    }
+}
