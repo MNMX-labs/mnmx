@@ -445,3 +445,170 @@ impl ExecutionPlan {
         }
     }
 }
+
+/// Summary statistics from a completed search.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchStats {
+    pub nodes_explored: u64,
+    pub nodes_pruned: u64,
+    pub max_depth_reached: u32,
+    pub time_ms: u64,
+    pub tt_hits: u64,
+    pub tt_misses: u64,
+    pub branching_factor: f64,
+}
+
+impl SearchStats {
+    pub fn new() -> Self {
+        Self {
+            nodes_explored: 0,
+            nodes_pruned: 0,
+            max_depth_reached: 0,
+            time_ms: 0,
+            tt_hits: 0,
+            tt_misses: 0,
+            branching_factor: 0.0,
+        }
+    }
+}
+
+impl Default for SearchStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A detected MEV threat against the agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MevThreat {
+    pub kind: MevKind,
+    pub probability: f64,
+    pub estimated_cost: u64,
+    pub source_address: String,
+    pub affected_pool: String,
+}
+
+impl MevThreat {
+    pub fn new(
+        kind: MevKind,
+        probability: f64,
+        estimated_cost: u64,
+        source_address: &str,
+        affected_pool: &str,
+    ) -> Self {
+        Self {
+            kind,
+            probability,
+            estimated_cost,
+            source_address: source_address.to_string(),
+            affected_pool: affected_pool.to_string(),
+        }
+    }
+
+    /// Expected value of the threat (probability * cost).
+    pub fn expected_value(&self) -> f64 {
+        self.probability * self.estimated_cost as f64
+    }
+}
+
+/// Kind of MEV attack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MevKind {
+    Sandwich,
+    Frontrun,
+    Backrun,
+    JitLiquidity,
+}
+
+impl MevKind {
+    pub fn severity_multiplier(&self) -> f64 {
+        match self {
+            MevKind::Sandwich => 2.0,
+            MevKind::Frontrun => 1.5,
+            MevKind::Backrun => 0.8,
+            MevKind::JitLiquidity => 1.2,
+        }
+    }
+}
+
+/// How time budget is allocated across the search.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeAllocation {
+    pub total_ms: u64,
+    pub per_depth: Vec<u64>,
+    pub emergency_stop_ms: u64,
+}
+
+impl TimeAllocation {
+    pub fn new(total_ms: u64, max_depth: u32) -> Self {
+        let mut per_depth = Vec::with_capacity(max_depth as usize);
+        let mut remaining = total_ms;
+        for d in 0..max_depth {
+            // Exponential allocation: deeper depths get more time.
+            let fraction = 1u64 << d;
+            let total_fractions: u64 = (0..max_depth).map(|i| 1u64 << i).sum();
+            let alloc = if total_fractions > 0 {
+                (remaining as u128 * fraction as u128 / total_fractions as u128) as u64
+            } else {
+                remaining
+            };
+            per_depth.push(alloc);
+        }
+        // Remaining time after allocation serves as emergency buffer.
+        let allocated: u64 = per_depth.iter().sum();
+        remaining = total_ms.saturating_sub(allocated);
+        let emergency_stop_ms = total_ms.saturating_sub(remaining / 2);
+        Self {
+            total_ms,
+            per_depth,
+            emergency_stop_ms,
+        }
+    }
+
+    /// How much time is left for a given depth.
+    pub fn time_for_depth(&self, depth: u32) -> u64 {
+        self.per_depth
+            .get(depth as usize)
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+/// Flag indicating the type of bound stored in a transposition table entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TranspositionFlag {
+    Exact,
+    LowerBound,
+    UpperBound,
+}
+
+/// A single entry in the transposition table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranspositionEntry {
+    pub hash: String,
+    pub depth: u32,
+    pub score: f64,
+    pub flag: TranspositionFlag,
+    pub best_action: Option<ExecutionAction>,
+    pub age: u64,
+}
+
+impl TranspositionEntry {
+    pub fn new(
+        hash: String,
+        depth: u32,
+        score: f64,
+        flag: TranspositionFlag,
+        best_action: Option<ExecutionAction>,
+        age: u64,
+    ) -> Self {
+        Self {
+            hash,
+            depth,
+            score,
+            flag,
+            best_action,
+            age,
+        }
+    }
+}
