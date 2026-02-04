@@ -287,3 +287,105 @@ pub fn geometric_mean(a: u64, b: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_constant_product_basic() {
+        // 1000 in, reserves 100_000 / 200_000, 30 bps fee
+        let out = constant_product_swap(1000, 100_000, 200_000, 30);
+        // Expected: ~1974 (slightly less than 2000 due to fees and slippage)
+        assert!(out > 1900 && out < 2000, "got {}", out);
+    }
+
+    #[test]
+    fn test_constant_product_zero_input() {
+        assert_eq!(constant_product_swap(0, 100_000, 200_000, 30), 0);
+    }
+
+    #[test]
+    fn test_inverse_round_trip() {
+        let amount_in = 5000u64;
+        let out = constant_product_swap(amount_in, 1_000_000, 2_000_000, 25);
+        let required_in = constant_product_inverse(out, 1_000_000, 2_000_000, 25);
+        // Due to rounding, required_in should be close to amount_in.
+        assert!(
+            (required_in as i64 - amount_in as i64).unsigned_abs() <= 2,
+            "in={amount_in} out={out} required={required_in}"
+        );
+    }
+
+    #[test]
+    fn test_isqrt_perfect_squares() {
+        assert_eq!(isqrt(0), 0);
+        assert_eq!(isqrt(1), 1);
+        assert_eq!(isqrt(4), 2);
+        assert_eq!(isqrt(9), 3);
+        assert_eq!(isqrt(100), 10);
+        assert_eq!(isqrt(10000), 100);
+    }
+
+    #[test]
+    fn test_isqrt_non_perfect() {
+        assert_eq!(isqrt(2), 1);
+        assert_eq!(isqrt(3), 1);
+        assert_eq!(isqrt(5), 2);
+        assert_eq!(isqrt(8), 2);
+        assert_eq!(isqrt(99), 9);
+    }
+
+    #[test]
+    fn test_logistic_bounds() {
+        assert!((logistic(0.0) - 0.5).abs() < 1e-10);
+        assert!(logistic(100.0) > 0.99);
+        assert!(logistic(-100.0) < 0.01);
+    }
+
+    #[test]
+    fn test_weighted_average() {
+        let vals = vec![(10.0, 1.0), (20.0, 1.0)];
+        assert!((weighted_average(&vals) - 15.0).abs() < 1e-10);
+
+        let vals2 = vec![(10.0, 3.0), (20.0, 1.0)];
+        assert!((weighted_average(&vals2) - 12.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_bps_to_decimal() {
+        assert!((bps_to_decimal(30) - 0.003).abs() < 1e-10);
+        assert!((bps_to_decimal(100) - 0.01).abs() < 1e-10);
+        assert!((bps_to_decimal(10000) - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_price_impact() {
+        let impact = calculate_price_impact(1000, 1_000_000, 2_000_000);
+        assert!(impact > 0.0 && impact < 0.01);
+
+        let big_impact = calculate_price_impact(500_000, 1_000_000, 2_000_000);
+        assert!(big_impact > impact);
+    }
+
+    #[test]
+    fn test_slippage() {
+        let slip = calculate_slippage(1000, 1_000_000, 2_000_000, 30);
+        assert!(slip >= 0.0 && slip <= 1.0);
+
+        // Larger trade => more slippage
+        let slip_big = calculate_slippage(100_000, 1_000_000, 2_000_000, 30);
+        assert!(slip_big > slip);
+    }
+
+    #[test]
+    fn test_sqrt_price_round_trip() {
+        let price = 1.5;
+        let sp = price_to_sqrt_price(price);
+        let recovered = sqrt_price_to_price(sp);
+        assert!((recovered - price).abs() < 0.001, "got {}", recovered);
+    }
+
+    #[test]
+    fn test_clamp() {
+        assert_eq!(clamp_f64(5.0, 0.0, 10.0), 5.0);
+        assert_eq!(clamp_f64(-1.0, 0.0, 10.0), 0.0);
+        assert_eq!(clamp_f64(15.0, 0.0, 10.0), 10.0);
+    }
+}
