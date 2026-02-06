@@ -85,3 +85,56 @@ export interface SearchConfig {
   readonly evaluationWeights: EvaluationWeights;
   readonly maxTranspositionEntries: number;
 }
+
+/** Sensible defaults for search configuration. */
+export const DEFAULT_SEARCH_CONFIG: SearchConfig = {
+  maxDepth: 6,
+  alphaBetaPruning: true,
+  timeLimitMs: 5_000,
+  evaluationWeights: {
+    gasCost: 0.15,
+    slippageImpact: 0.25,
+    mevExposure: 0.35,
+    profitPotential: 0.25,
+  },
+  maxTranspositionEntries: 100_000,
+};
+
+// ── On-Chain State ──────────────────────────────────────────────────
+
+/** Snapshot of a liquidity pool's reserves and configuration. */
+export interface PoolState {
+  readonly address: string;
+  readonly tokenMintA: string;
+  readonly tokenMintB: string;
+  reserveA: bigint;
+  reserveB: bigint;
+  readonly feeBps: number;
+  readonly tickSpacing?: number;
+  readonly sqrtPriceX64?: bigint;
+}
+
+/** A pending (unconfirmed) transaction visible in the mempool. */
+export interface PendingTx {
+  readonly signature: string;
+  readonly fromAddress: string;
+  readonly toAddress: string;
+  readonly programId: string;
+  readonly data: Uint8Array;
+  readonly lamports: bigint;
+  readonly slot: number;
+}
+
+/** Aggregated view of relevant on-chain state at a point in time. */
+export interface OnChainState {
+  tokenBalances: Map<string, bigint>;
+  poolStates: Map<string, PoolState>;
+  pendingTransactions: PendingTx[];
+  slot: number;
+  readonly timestamp: number;
+}
+
+// ── MEV Threat Model ────────────────────────────────────────────────
+
+/** Classification of MEV extraction strategies. */
+export type MevThreatKind = 'sandwich' | 'frontrun' | 'backrun' | 'jit';
