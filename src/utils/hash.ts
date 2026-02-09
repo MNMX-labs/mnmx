@@ -101,3 +101,72 @@ function mixValue(hash: bigint, key: bigint, value: bigint): bigint {
 
 /** Global (lazily initialised) Zobrist table. */
 let _globalTable: ZobristTable | null = null;
+
+function getGlobalTable(): ZobristTable {
+  if (!_globalTable) _globalTable = initZobristTable();
+  return _globalTable;
+}
+
+/**
+ * Compute a full Zobrist-style hash for an OnChainState snapshot.
+ * Returns a hex-encoded string for use as a Map key.
+ */
+export function hashOnChainState(state: OnChainState, table?: ZobristTable): string {
+  const t = table ?? getGlobalTable();
+  let hash = t.salts[0]!;
+
+  // Token balances
+  for (const [mint, balance] of state.tokenBalances) {
+    const idx = bucketIndex(mint, ZOBRIST_TABLE_SLOTS);
+    hash = mixValue(hash, t.balanceKeys[idx]!, balance);
+  }
+
+  // Pool reserves
+  for (const [addr, pool] of state.poolStates) {
+    const idx = bucketIndex(addr, ZOBRIST_TABLE_SLOTS);
+    hash = mixValue(hash, t.reserveKeys[idx]!, pool.reserveA);
+    hash = mixValue(hash, t.reserveKeys[(idx + 1) % ZOBRIST_TABLE_SLOTS]!, pool.reserveB);
+  }
+
+  // Slot
+  const slotIdx = Number(BigInt(state.slot) % BigInt(ZOBRIST_TABLE_SLOTS));
+  hash = mixValue(hash, t.slotKeys[slotIdx]!, BigInt(state.slot));
+
+  return hash.toString(16).padStart(16, '0');
+}
+
+// ── Incremental Hash ────────────────────────────────────────────────
+
+/**
+ * Incrementally update a hash given a single state change.
+ * Because Zobrist hashing uses XOR, we can "undo" the old value and
+ * "apply" the new value in O(1).
+ */
+export function incrementalHash(
+  prevHash: string,
+  change: StateChange,
+  table?: ZobristTable,
+): string {
+  const t = table ?? getGlobalTable();
+  let hash = BigInt('0x' + prevHash);
+
+  let keys: bigint[];
+  switch (change.field) {
+    case 'tokenBalance':
+      keys = t.balanceKeys;
+      break;
+    case 'poolReserve':
+      keys = t.reserveKeys;
+      break;
+    case 'slot':
+      keys = t.slotKeys;
+      break;
+  }
+
+  const idx = bucketIndex(change.key, ZOBRIST_TABLE_SLOTS);
+  // XOR out old contribution, XOR in new
+  hash = mixValue(hash, keys[idx]!, change.previousValue);
+  hash = mixValue(hash, keys[idx]!, change.newValue);
+
+  return hash.toString(16).padStart(16, '0');
+}
