@@ -257,3 +257,150 @@ export class MinimaxEngine {
           bestScore = score;
           bestAction = action;
         }
+
+        if (score > alpha) {
+          alpha = score;
+          boundFlag = 'exact';
+        }
+
+        if (this.config.alphaBetaPruning && alpha >= beta) {
+          this.nodesPruned++;
+          this.moveOrderer.updateKillerMove(depth, action);
+          this.moveOrderer.updateHistory(action, depth);
+          boundFlag = 'lower';
+          break;
+        }
+      }
+    } else {
+      // Adversary's turn – try each MEV threat + "do nothing"
+      const moves = this.buildAdversaryMoveList(adversaryThreats);
+
+      for (const move of moves) {
+        if (this.searchAborted) break;
+
+        const nextState = move
+          ? this.treeBuilder.simulateMevResponse(state, move)
+          : state;
+
+        const score = -this.minimaxSearch(
+          nextState,
+          depth - 1,
+          -beta,
+          -alpha,
+          true,
+          agentActions,
+          adversaryThreats,
+        );
+
+        if (score > bestScore) {
+          bestScore = score;
+        }
+
+        if (score > alpha) {
+          alpha = score;
+          boundFlag = 'exact';
+        }
+
+        if (this.config.alphaBetaPruning && alpha >= beta) {
+          this.nodesPruned++;
+          boundFlag = 'lower';
+          break;
+        }
+      }
+    }
+
+    // Store in transposition table
+    if (!this.searchAborted) {
+      this.transpositionTable.store(
+        stateHash,
+        depth,
+        bestScore,
+        boundFlag,
+        bestAction,
+      );
+    }
+
+    return bestScore;
+  }
+
+  // ── Leaf Evaluation ─────────────────────────────────────────────
+
+  private evaluateLeaf(
+    state: OnChainState,
+    agentActions: ExecutionAction[],
+    maximizing: boolean,
+  ): number {
+    // Evaluate the state from the agent's perspective using the best
+    // available action as context
+    if (agentActions.length === 0) return 0;
+
+    let bestScore = -Infinity;
+    for (const action of agentActions) {
+      const result = this.evaluator.evaluate(state, action);
+      if (result.score > bestScore) {
+        bestScore = result.score;
+      }
+    }
+
+    return maximizing ? bestScore : -bestScore;
+  }
+
+  // ── Adversary Move List ─────────────────────────────────────────
+
+  /**
+   * Build the list of adversary "moves", which includes each MEV
+   * threat plus a null move (adversary passes / does nothing).
+   * Sort by probability descending so high-probability threats are
+   * evaluated first for better pruning.
+   */
+  private buildAdversaryMoveList(
+    threats: MevThreat[],
+  ): (MevThreat | null)[] {
+    const sorted = [...threats].sort(
+      (a, b) => b.probability - a.probability,
+    );
+    return [...sorted, null]; // null = adversary passes
+  }
+
+  // ── Time Management ─────────────────────────────────────────────
+
+  private isTimeUp(): boolean {
+    return performance.now() >= this.deadline;
+  }
+
+  private resetSearchState(startTime: number): void {
+    this.deadline = startTime + this.config.timeLimitMs;
+    this.nodesExplored = 0;
+    this.nodesPruned = 0;
+    this.maxDepthReached = 0;
+    this.searchAborted = false;
+    this.bestRootAction = null;
+  }
+
+  // ── Empty Plan ──────────────────────────────────────────────────
+
+  private emptyPlan(state: OnChainState, startTime: number): ExecutionPlan {
+    return {
+      actions: [],
+      expectedOutcome: {
+        score: 0,
+        breakdown: {
+          gasCost: 0,
+          slippageImpact: 0,
+          mevExposure: 0,
+          profitPotential: 0,
+        },
+        confidence: 0,
+      },
+      totalScore: 0,
+      stats: {
+        nodesExplored: 0,
+        nodesPruned: 0,
+        maxDepthReached: 0,
+        timeMs: performance.now() - startTime,
+        transpositionHits: 0,
+      },
+      rootStateHash: this.treeBuilder.hashState(state),
+    };
+  }
+}
