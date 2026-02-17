@@ -170,3 +170,118 @@ fn test_max_hops_constraint() {
             "should respect max_hops=1, got {} hops",
             route.hops.len()
         );
+    }
+}
+
+#[test]
+fn test_route_value_retention() {
+    let mut router = MnmxRouter::new(RouterConfig::default());
+    router.set_registry(build_mock_registry());
+
+    let request = make_request(
+        Chain::Ethereum,
+        eth_usdc(),
+        Chain::Arbitrum,
+        arb_usdc(),
+        10000.0,
+        2,
+    );
+
+    let result = router.find_route(&request);
+    let route = result.best_route.expect("should find a route");
+
+    // Value retention should be > 95% for a simple stablecoin transfer
+    let retention = route.value_retention(10000.0);
+    assert!(
+        retention > 0.90,
+        "stablecoin route should retain >90% value, got {}%",
+        retention * 100.0
+    );
+}
+
+#[test]
+fn test_route_serialization() {
+    let mut router = MnmxRouter::new(RouterConfig::default());
+    router.set_registry(build_mock_registry());
+
+    let request = make_request(
+        Chain::Ethereum,
+        eth_usdc(),
+        Chain::Arbitrum,
+        arb_usdc(),
+        5000.0,
+        2,
+    );
+
+    let result = router.find_route(&request);
+    let route = result.best_route.expect("should find a route");
+
+    // Route should be serializable to JSON
+    let json = serde_json::to_string(&route).expect("should serialize");
+    let deserialized: Route = serde_json::from_str(&json).expect("should deserialize");
+
+    assert_eq!(route.hops.len(), deserialized.hops.len());
+    assert!((route.expected_output - deserialized.expected_output).abs() < 0.001);
+}
+
+#[test]
+fn test_cross_vm_routing() {
+    let mut router = MnmxRouter::new(RouterConfig::default());
+    router.set_registry(build_mock_registry());
+
+    // Ethereum (EVM) to Solana (SVM) - cross-VM transfer
+    let request = make_request(
+        Chain::Ethereum,
+        eth_usdc(),
+        Chain::Solana,
+        sol_usdc(),
+        10000.0,
+        2,
+    );
+
+    let result = router.find_route(&request);
+    assert!(
+        result.best_route.is_some(),
+        "should find a cross-VM route"
+    );
+}
+
+#[test]
+fn test_multiple_quotes_sorted() {
+    let mut router = MnmxRouter::new(RouterConfig::default());
+    router.set_registry(build_mock_registry());
+
+    let quotes = router.get_quotes(&eth_usdc(), &arb_usdc(), 10000.0);
+
+    assert!(quotes.len() >= 2, "should get multiple quotes");
+
+    // Quotes should be sorted by output (best first)
+    for window in quotes.windows(2) {
+        assert!(
+            window[0].output_amount >= window[1].output_amount,
+            "quotes should be sorted by output"
+        );
+    }
+}
+
+#[test]
+fn test_route_chains_traversed() {
+    let mut router = MnmxRouter::new(RouterConfig::default());
+    router.set_registry(build_mock_registry());
+
+    let request = make_request(
+        Chain::Ethereum,
+        eth_usdc(),
+        Chain::Base,
+        base_usdc(),
+        10000.0,
+        2,
+    );
+
+    let result = router.find_route(&request);
+    let route = result.best_route.expect("should find route");
+    let chains = route.chains_traversed();
+
+    assert_eq!(*chains.first().unwrap(), Chain::Ethereum);
+    assert_eq!(*chains.last().unwrap(), Chain::Base);
+}
