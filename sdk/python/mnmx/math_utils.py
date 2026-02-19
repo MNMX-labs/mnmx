@@ -136,3 +136,67 @@ def sqrt_price_to_price(sqrt_price: int, decimals_a: int = 9, decimals_b: int = 
     price_raw = (sqrt_price / q64) ** 2
     decimal_adjustment = 10 ** (decimals_a - decimals_b)
     return price_raw * decimal_adjustment
+
+
+def concentrated_liquidity_swap(
+    amount_in: int,
+    liquidity: int,
+    sqrt_price: int,
+    fee_bps: int = 30,
+) -> tuple[int, int]:
+    """
+    Simulate a swap on a concentrated-liquidity AMM within a single tick range.
+
+    Returns (amount_out, new_sqrt_price).
+    Uses the formula: delta_sqrt_price = amount_in * fee_factor / liquidity
+    """
+    if amount_in <= 0 or liquidity <= 0 or sqrt_price <= 0:
+        return (0, sqrt_price)
+
+    q64 = 2**64
+    fee_factor = (10_000 - fee_bps) / 10_000
+    amount_after_fee = int(amount_in * fee_factor)
+
+    delta_sqrt_price = (amount_after_fee * q64) // liquidity
+    new_sqrt_price = sqrt_price + delta_sqrt_price
+
+    if new_sqrt_price <= 0:
+        return (0, sqrt_price)
+
+    # amount_out = liquidity * |1/sqrt_price_old - 1/sqrt_price_new|  (in Q64)
+    inv_old = (q64 * q64) // sqrt_price
+    inv_new = (q64 * q64) // new_sqrt_price
+    amount_out = abs((liquidity * (inv_old - inv_new)) // q64)
+
+    return (int(amount_out), int(new_sqrt_price))
+
+
+def optimal_split(total_amount: int, pools: list["PoolState"]) -> list[int]:
+    """
+    Split `total_amount` across multiple pools to minimise aggregate slippage.
+
+    Uses iterative greedy allocation: repeatedly assigns a small chunk to the
+    pool that currently offers the best marginal output.
+    """
+    if not pools:
+        return []
+    if len(pools) == 1:
+        return [total_amount]
+
+    n = len(pools)
+    allocations = [0] * n
+    # track "virtual" reserves (adjusted as we allocate)
+    reserves = [(p.reserve_a, p.reserve_b, p.fee_bps) for p in pools]
+    remaining = total_amount
+    chunk = max(1, total_amount // 100)
+
+    while remaining > 0:
+        current_chunk = min(chunk, remaining)
+        best_idx = 0
+        best_output = -1
+        for i in range(n):
+            ra, rb, fee = reserves[i]
+            out = constant_product_output(current_chunk, ra, rb, fee)
+            if out > best_output:
+                best_output = out
+                best_idx = i
