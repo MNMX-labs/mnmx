@@ -278,3 +278,109 @@ class MnmxClient:
                         backoff = min(backoff * _BACKOFF_MULTIPLIER, _MAX_BACKOFF)
                         continue
                     raise RateLimitError(retry_after_seconds=retry_after)
+
+                if response.status_code >= 500 and attempt < self.max_retries:
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * _BACKOFF_MULTIPLIER, _MAX_BACKOFF)
+                    continue
+
+                self._check_status(response.status_code, response.text)
+                return response.json()
+
+            except httpx.ConnectError as exc:
+                last_exception = exc
+                if attempt < self.max_retries:
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * _BACKOFF_MULTIPLIER, _MAX_BACKOFF)
+                    continue
+                raise ConnectionError(
+                    message="Failed to connect to MNMX engine",
+                    endpoint=self.endpoint,
+                ) from exc
+
+            except httpx.TimeoutException as exc:
+                last_exception = exc
+                if attempt < self.max_retries:
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * _BACKOFF_MULTIPLIER, _MAX_BACKOFF)
+                    continue
+                raise TimeoutError(
+                    message="Request timed out",
+                    elapsed_ms=(time.monotonic() - start) * 1000,
+                    limit_ms=self.timeout * 1000,
+                ) from exc
+
+        raise MnmxError(
+            message="Exhausted all retries",
+            details={"last_error": str(last_exception)},
+        )
+
+    @staticmethod
+    def _check_status(status_code: int, body: str) -> None:
+        """Raise the appropriate exception for non-2xx status codes."""
+        if 200 <= status_code < 300:
+            return
+
+        if status_code == 401:
+            raise AuthenticationError()
+        if status_code == 403:
+            raise AuthenticationError(
+                message="Forbidden: insufficient permissions",
+                status_code=403,
+            )
+        if status_code == 400:
+            raise InvalidActionError(
+                message=f"Bad request: {body[:200]}",
+                status_code=400,
+            )
+        if status_code == 404:
+            raise MnmxError(
+                message=f"Resource not found",
+                status_code=404,
+            )
+        if status_code == 429:
+            raise RateLimitError()
+
+        raise MnmxError(
+            message=f"HTTP {status_code}: {body[:300]}",
+            status_code=status_code,
+        )
+
+    @staticmethod
+    def _parse_sse_event(raw: str) -> SearchProgressEvent | None:
+        """Parse a server-sent event string into a SearchProgressEvent."""
+        event_type = "progress"
+        data_lines: list[str] = []
+
+        for line in raw.strip().splitlines():
+            if line.startswith("event:"):
+                event_type = line[6:].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[5:].strip())
+
+        if not data_lines:
+            return None
+
+        import json
+
+        try:
+            payload = json.loads("".join(data_lines))
+        except json.JSONDecodeError:
+            return SearchProgressEvent(event_type=event_type, message="".join(data_lines))
+
+        partial_plan: ExecutionPlan | None = None
+        if "actions" in payload:
+            try:
+                partial_plan = ExecutionPlan.model_validate(payload)
+            except Exception:
+                partial_plan = None
+
+        return SearchProgressEvent(
+            event_type=event_type,
+            depth=payload.get("depth", 0),
+            nodes_explored=payload.get("nodes_explored", 0),
+            best_score=payload.get("best_score", 0.0),
+            elapsed_ms=payload.get("elapsed_ms", 0.0),
+            message=payload.get("message", ""),
+            partial_plan=partial_plan,
+        )
