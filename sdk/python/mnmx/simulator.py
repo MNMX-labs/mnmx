@@ -113,3 +113,116 @@ class Simulator:
         amount_out = constant_product_output(
             action.amount_in, reserve_in, reserve_out, pool.fee_bps
         )
+
+        if amount_out == 0:
+            return SimulationResult(
+                success=False,
+                error="Swap would produce zero output",
+            )
+
+        if amount_out < action.min_amount_out:
+            return SimulationResult(
+                success=False,
+                amount_out=amount_out,
+                error=(
+                    f"Output {amount_out} below minimum {action.min_amount_out}"
+                ),
+                warnings=["Slippage tolerance exceeded"],
+            )
+
+        impact_bps = int(
+            calculate_price_impact(action.amount_in, reserve_in, reserve_out) * 10_000
+        )
+        slippage_bps = int(
+            calculate_slippage(action.amount_in, reserve_in, reserve_out, pool.fee_bps) * 10_000
+        )
+
+        gas_cost = self.estimate_gas_cost(action)
+
+        effective_price = action.amount_in / amount_out if amount_out > 0 else 0.0
+
+        # Compute MEV risk from pending transactions
+        mev_risk = self._estimate_mev_risk(state, action, pool)
+
+        warnings: list[str] = []
+        if impact_bps > 100:
+            warnings.append(f"High price impact: {impact_bps} bps")
+        if mev_risk > 0.5:
+            warnings.append(f"Elevated MEV risk: {mev_risk:.2%}")
+
+        new_state = self._apply_action_to_state(state, action)
+
+        return SimulationResult(
+            success=True,
+            amount_out=amount_out,
+            price_impact_bps=impact_bps,
+            slippage_bps=slippage_bps,
+            gas_cost_lamports=gas_cost,
+            mev_risk=mev_risk,
+            effective_price=effective_price,
+            new_state=new_state,
+            warnings=warnings,
+        )
+
+    def simulate_mev_attack(
+        self,
+        state: OnChainState,
+        action: ExecutionAction,
+        threat: MevThreat,
+    ) -> SimulationResult:
+        """Simulate the effect of a specific MEV attack on the victim's trade."""
+        pool = state.get_pool(action.pool_address)
+        if pool is None:
+            return SimulationResult(
+                success=False,
+                error=f"Pool {action.pool_address} not found",
+            )
+
+        reserve_in, reserve_out = self._resolve_reserves(pool, action.token_in)
+
+        if threat.kind == MevKind.FRONTRUN:
+            frontrun_amount = int(action.amount_in * 0.3)
+            fr_out = constant_product_output(frontrun_amount, reserve_in, reserve_out, pool.fee_bps)
+            reserve_in += frontrun_amount
+            reserve_out -= fr_out
+
+        elif threat.kind == MevKind.SANDWICH:
+            frontrun_amount = int(action.amount_in * 0.5)
+            fr_out = constant_product_output(frontrun_amount, reserve_in, reserve_out, pool.fee_bps)
+            reserve_in += frontrun_amount
+            reserve_out -= fr_out
+
+        elif threat.kind == MevKind.JIT_LIQUIDITY:
+            jit_boost = int(reserve_in * 0.2)
+            reserve_in += jit_boost
+            reserve_out += int(reserve_out * 0.2)
+
+        victim_output = constant_product_output(
+            action.amount_in, reserve_in, reserve_out, pool.fee_bps
+        )
+
+        clean_output = constant_product_output(
+            action.amount_in,
+            *self._resolve_reserves(pool, action.token_in),
+            pool.fee_bps,
+        )
+
+        mev_loss = max(0, clean_output - victim_output)
+        gas_cost = self.estimate_gas_cost(action)
+
+        return SimulationResult(
+            success=victim_output >= action.min_amount_out,
+            amount_out=victim_output,
+            price_impact_bps=int(
+                calculate_price_impact(action.amount_in, reserve_in, reserve_out) * 10_000
+            ),
+            slippage_bps=int(
+                calculate_slippage(action.amount_in, reserve_in, reserve_out, pool.fee_bps) * 10_000
+            ),
+            gas_cost_lamports=gas_cost,
+            mev_risk=threat.confidence,
+            effective_price=(action.amount_in / victim_output if victim_output > 0 else 0.0),
+            warnings=[
+                f"MEV attack ({threat.kind.value}) caused loss of {mev_loss} tokens",
+            ],
+        )
