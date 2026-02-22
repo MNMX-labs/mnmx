@@ -90,3 +90,96 @@ export function discoverChainPaths(
   const visited = new Set<Chain>();
 
   function dfs(current: Chain, path: Chain[]): void {
+    // path includes fromChain, so maxHops+1 is the length limit
+    if (path.length > options.maxHops + 1) return;
+    if (current === toChain) {
+      results.push([...path]);
+      return;
+    }
+    const neighbors = graph.get(current);
+    if (!neighbors) return;
+
+    // Sort neighbors by connectivity heuristic: prefer chains that are
+    // well-connected to the destination
+    const neighborChains = Array.from(neighbors.keys());
+    const sorted = sortByConnectivity(neighborChains, toChain);
+
+    for (const next of sorted) {
+      if (visited.has(next)) continue;
+      if (options.excludeChains.includes(next) && next !== toChain) continue;
+      visited.add(next);
+      path.push(next);
+      dfs(next, path);
+      path.pop();
+      visited.delete(next);
+    }
+  }
+
+  visited.add(fromChain);
+  dfs(fromChain, [fromChain]);
+  return results;
+}
+
+/**
+ * Sort chains by how well-connected they are to the target chain.
+ * Chains directly connected to the target come first.
+ */
+function sortByConnectivity(chains: Chain[], target: Chain): Chain[] {
+  return [...chains].sort((a, b) => {
+    // Direct connection to target is best
+    const aDirectly = a === target ? -100 : 0;
+    const bDirectly = b === target ? -100 : 0;
+    if (aDirectly !== bDirectly) return aDirectly - bDirectly;
+
+    // Prefer chains connected to target
+    const aConnected = CHAIN_CONNECTIVITY[a]?.includes(target) ? -10 : 0;
+    const bConnected = CHAIN_CONNECTIVITY[b]?.includes(target) ? -10 : 0;
+    if (aConnected !== bConnected) return aConnected - bConnected;
+
+    // Prefer chains with more overall connectivity
+    const aConns = CHAIN_CONNECTIVITY[a]?.length ?? 0;
+    const bConns = CHAIN_CONNECTIVITY[b]?.length ?? 0;
+    return bConns - aConns;
+  });
+}
+
+/**
+ * Filter dominated paths: remove paths that are strictly worse than another
+ * (more hops through same intermediate chains).
+ */
+export function filterDominatedPaths(paths: Chain[][]): Chain[][] {
+  const dominated = new Set<number>();
+  for (let i = 0; i < paths.length; i++) {
+    if (dominated.has(i)) continue;
+    for (let j = 0; j < paths.length; j++) {
+      if (i === j || dominated.has(j)) continue;
+      if (paths[j].length > paths[i].length && isSubpath(paths[i], paths[j])) {
+        dominated.add(j);
+      }
+    }
+  }
+  return paths.filter((_, idx) => !dominated.has(idx));
+}
+
+/**
+ * Check if shorter path is a subsequence of longer path (same start/end).
+ */
+function isSubpath(shorter: Chain[], longer: Chain[]): boolean {
+  if (shorter[0] !== longer[0]) return false;
+  if (shorter[shorter.length - 1] !== longer[longer.length - 1]) return false;
+  let si = 0;
+  for (let li = 0; li < longer.length && si < shorter.length; li++) {
+    if (longer[li] === shorter[si]) si++;
+  }
+  return si === shorter.length;
+}
+
+/**
+ * Get the list of intermediate chains commonly used between two chains.
+ * Useful for suggesting multi-hop paths.
+ */
+export function getIntermediateChains(from: Chain, to: Chain): Chain[] {
+  const fromConns = new Set(CHAIN_CONNECTIVITY[from] ?? []);
+  const toConns = new Set(CHAIN_CONNECTIVITY[to] ?? []);
+  const intermediates: Chain[] = [];
+
