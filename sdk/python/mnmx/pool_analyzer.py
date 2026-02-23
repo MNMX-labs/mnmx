@@ -113,3 +113,137 @@ class PoolAnalyzer:
             self.calculate_depth(pool, bps, prices)
             for bps in [10, 50, 100, 200, 500]
         ]
+
+        price_a_in_b = pool.reserve_b / pool.reserve_a if pool.reserve_a > 0 else 0.0
+        price_b_in_a = pool.reserve_a / pool.reserve_b if pool.reserve_b > 0 else 0.0
+
+        total_reserves = pool.reserve_a + pool.reserve_b
+        if total_reserves > 0:
+            imbalance = abs(pool.reserve_a - pool.reserve_b) / total_reserves
+        else:
+            imbalance = 0.0
+
+        # rough APR estimate: assume daily volume is 5% of TVL, fees on that
+        daily_volume = tvl * 0.05
+        daily_fees = daily_volume * bps_to_decimal(pool.fee_bps)
+        fee_apr = (daily_fees * 365) / tvl if tvl > 0 else 0.0
+
+        return PoolAnalysis(
+            pool=pool,
+            tvl_usd=tvl,
+            price_a_in_b=price_a_in_b,
+            price_b_in_a=price_b_in_a,
+            depth_levels=depth_levels,
+            fee_apr_estimate=fee_apr,
+            volume_24h_estimate=daily_volume,
+            imbalance_ratio=imbalance,
+        )
+
+    def calculate_tvl(
+        self, pool: PoolState, prices: dict[str, float]
+    ) -> float:
+        """
+        Calculate total value locked in USD.
+
+        If token prices are unavailable, falls back to reserve ratio heuristics.
+        """
+        price_a = prices.get(pool.token_a_mint, 0.0)
+        price_b = prices.get(pool.token_b_mint, 0.0)
+
+        if price_a > 0 and price_b > 0:
+            return pool.reserve_a * price_a + pool.reserve_b * price_b
+
+        # if we have one price, infer the other via the pool ratio
+        if price_a > 0 and pool.reserve_a > 0:
+            inferred_b = (pool.reserve_a * price_a) / pool.reserve_b if pool.reserve_b > 0 else 0.0
+            return pool.reserve_a * price_a + pool.reserve_b * inferred_b
+
+        if price_b > 0 and pool.reserve_b > 0:
+            inferred_a = (pool.reserve_b * price_b) / pool.reserve_a if pool.reserve_a > 0 else 0.0
+            return pool.reserve_a * inferred_a + pool.reserve_b * price_b
+
+        # no prices at all — return raw reserves sum as a proxy
+        return float(pool.reserve_a + pool.reserve_b)
+
+    def calculate_depth(
+        self,
+        pool: PoolState,
+        impact_bps: int,
+        prices: dict[str, float] | None = None,
+    ) -> LiquidityDepth:
+        """
+        Determine how much can be bought/sold before hitting a given impact.
+
+        Uses binary search to find the maximum trade size that stays within
+        the specified price impact.
+        """
+        prices = prices or {}
+        target_impact = impact_bps / 10_000
+
+        max_buy = self._binary_search_depth(
+            pool.reserve_a, pool.reserve_b, target_impact
+        )
+        max_sell = self._binary_search_depth(
+            pool.reserve_b, pool.reserve_a, target_impact
+        )
+
+        price_a = prices.get(pool.token_a_mint, 1.0)
+        price_b = prices.get(pool.token_b_mint, 1.0)
+
+        return LiquidityDepth(
+            impact_bps=impact_bps,
+            max_buy_amount=max_buy,
+            max_sell_amount=max_sell,
+            buy_depth_usd=max_buy * price_a,
+            sell_depth_usd=max_sell * price_b,
+        )
+
+    def estimate_swap_output(
+        self,
+        pool: PoolState,
+        amount_in: int,
+        token_in: str,
+    ) -> SwapEstimate:
+        """Estimate the output of a swap without executing it."""
+        if token_in == pool.token_a_mint:
+            reserve_in, reserve_out = pool.reserve_a, pool.reserve_b
+        else:
+            reserve_in, reserve_out = pool.reserve_b, pool.reserve_a
+
+        amount_out = constant_product_output(
+            amount_in, reserve_in, reserve_out, pool.fee_bps
+        )
+
+        impact = calculate_price_impact(amount_in, reserve_in, reserve_out)
+        impact_bps = int(impact * 10_000)
+
+        fee_amount = (amount_in * pool.fee_bps) // 10_000
+        effective_price = amount_in / amount_out if amount_out > 0 else 0.0
+        min_received = int(amount_out * 0.995)  # 0.5% default slippage
+
+        return SwapEstimate(
+            amount_out=amount_out,
+            price_impact_bps=impact_bps,
+            effective_price=effective_price,
+            fee_amount=fee_amount,
+            minimum_received=min_received,
+        )
+
+    def find_arbitrage(
+        self, pools: list[PoolState]
+    ) -> list[ArbitrageRoute]:
+        """
+        Detect circular arbitrage opportunities across a set of pools.
+
+        Searches for two-pool triangular routes where buying on one pool
+        and selling on another yields a profit.
+        """
+        routes: list[ArbitrageRoute] = []
+
+        # build adjacency: token -> list of (pool, other_token)
+        adjacency: dict[str, list[tuple[PoolState, str]]] = {}
+        for pool in pools:
+            adjacency.setdefault(pool.token_a_mint, []).append((pool, pool.token_b_mint))
+            adjacency.setdefault(pool.token_b_mint, []).append((pool, pool.token_a_mint))
+
+        visited_pairs: set[tuple[str, str]] = set()
