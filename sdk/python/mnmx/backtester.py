@@ -310,3 +310,138 @@ class Backtester:
             end_slot=end_slot,
             duration_slots=max(0, end_slot - start_slot),
         )
+
+    def evaluate_strategy(
+        self, state: OnChainState, strategy: Strategy
+    ) -> ExecutionAction | None:
+        """Ask the strategy for a decision on the current state."""
+        return strategy.decide(state)
+
+    def record_result(self, record: TradeRecord, strategy: Strategy) -> None:
+        """Store a trade record and notify the strategy."""
+        self._trade_records.append(record)
+        strategy.on_trade_result(record)
+
+    def calculate_metrics(self) -> BacktestMetrics:
+        """Compute aggregate metrics from all recorded trades."""
+        if not self._trade_records:
+            return BacktestMetrics()
+
+        total_pnl = sum(r.pnl_lamports for r in self._trade_records)
+        wins = sum(1 for r in self._trade_records if r.pnl_lamports > 0)
+        n = len(self._trade_records)
+        win_rate = wins / n if n > 0 else 0.0
+
+        returns = [float(r.pnl_lamports) for r in self._trade_records]
+        sharpe = self._calculate_sharpe(returns, self.config.risk_free_rate)
+        max_dd = self._calculate_max_drawdown(self._equity_curve)
+
+        avg_slip = (
+            sum(r.slippage_bps for r in self._trade_records) / n if n > 0 else 0.0
+        )
+        mev_losses = sum(r.mev_loss for r in self._trade_records)
+        total_gas = sum(r.gas_cost for r in self._trade_records)
+
+        gross_profit = sum(r.pnl_lamports for r in self._trade_records if r.pnl_lamports > 0)
+        gross_loss = abs(sum(r.pnl_lamports for r in self._trade_records if r.pnl_lamports < 0))
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+
+        return BacktestMetrics(
+            total_pnl=total_pnl,
+            win_rate=win_rate,
+            sharpe_ratio=sharpe,
+            max_drawdown=max_dd,
+            avg_slippage_bps=avg_slip,
+            mev_losses=mev_losses,
+            total_gas=total_gas,
+            num_trades=n,
+            profit_factor=profit_factor,
+        )
+
+    def generate_report(self, result: BacktestResult) -> str:
+        """Generate a formatted text report from backtest results."""
+        lines = [
+            "=" * 60,
+            "  MNMX BACKTEST REPORT",
+            "=" * 60,
+            "",
+            f"  Period:          slot {result.start_slot} -> {result.end_slot} ({result.duration_slots} slots)",
+            f"  Total trades:    {result.num_trades}",
+            f"  Total PnL:       {result.total_pnl:,} lamports",
+            f"  Win rate:        {result.win_rate:.1%}",
+            f"  Sharpe ratio:    {result.sharpe_ratio:.4f}",
+            f"  Max drawdown:    {result.max_drawdown:.2%}",
+            f"  Avg slippage:    {result.avg_slippage_bps:.1f} bps",
+            f"  MEV losses:      {result.total_mev_losses:,} lamports",
+            f"  Gas costs:       {result.total_gas_costs:,} lamports",
+            "",
+        ]
+
+        if result.trades:
+            lines.append("  TRADE LOG (last 10)")
+            lines.append("  " + "-" * 56)
+            for trade in result.trades[-10:]:
+                direction = f"{trade.action.token_in} -> {trade.action.token_out}"
+                lines.append(
+                    f"  slot {trade.slot:>8} | {direction:<20} | "
+                    f"pnl {trade.pnl_lamports:>+10,} | slip {trade.slippage_bps:>4} bps"
+                )
+            lines.append("")
+
+        if result.equity_curve and len(result.equity_curve) > 1:
+            peak = max(result.equity_curve)
+            trough = min(result.equity_curve)
+            lines.append(f"  Equity peak:     {peak:,.0f}")
+            lines.append(f"  Equity trough:   {trough:,.0f}")
+            lines.append(f"  Final equity:    {result.equity_curve[-1]:,.0f}")
+
+        lines.append("")
+        lines.append("=" * 60)
+        return "\n".join(lines)
+
+    # -- internal -----------------------------------------------------------
+
+    @staticmethod
+    def _calculate_sharpe(
+        returns: list[float], risk_free_rate: float = 0.05
+    ) -> float:
+        """
+        Calculate annualised Sharpe ratio.
+
+        Assumes each return is per-slot and there are ~216,000 slots/day
+        on Solana (400ms each).
+        """
+        if len(returns) < 2:
+            return 0.0
+        mean_ret = sum(returns) / len(returns)
+        variance = sum((r - mean_ret) ** 2 for r in returns) / (len(returns) - 1)
+        std = math.sqrt(variance) if variance > 0 else 0.0
+        if std == 0:
+            return 0.0
+        # annualise: ~216000 slots/day * 365 days
+        periods_per_year = 216_000 * 365
+        annual_return = mean_ret * periods_per_year
+        annual_std = std * math.sqrt(periods_per_year)
+        return (annual_return - risk_free_rate) / annual_std
+
+    @staticmethod
+    def _calculate_max_drawdown(equity_curve: list[float]) -> float:
+        """
+        Calculate maximum drawdown as a fraction (0.0 to 1.0).
+
+        Drawdown = (peak - trough) / peak for the worst peak-to-trough decline.
+        """
+        if len(equity_curve) < 2:
+            return 0.0
+
+        peak = equity_curve[0]
+        max_dd = 0.0
+
+        for value in equity_curve[1:]:
+            if value > peak:
+                peak = value
+            if peak > 0:
+                dd = (peak - value) / peak
+                max_dd = max(max_dd, dd)
+
+        return min(1.0, max_dd)
