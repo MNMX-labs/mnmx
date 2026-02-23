@@ -247,3 +247,145 @@ class PoolAnalyzer:
             adjacency.setdefault(pool.token_b_mint, []).append((pool, pool.token_a_mint))
 
         visited_pairs: set[tuple[str, str]] = set()
+
+        for token_start, edges in adjacency.items():
+            for pool1, token_mid in edges:
+                if token_mid not in adjacency:
+                    continue
+                for pool2, token_end in adjacency[token_mid]:
+                    if pool2.address == pool1.address:
+                        continue
+                    if token_end != token_start:
+                        continue
+
+                    pair_key = tuple(sorted([pool1.address, pool2.address]))
+                    if pair_key in visited_pairs:
+                        continue
+                    visited_pairs.add(pair_key)
+
+                    # check if route is profitable
+                    test_amount = min(pool1.reserve_a, pool1.reserve_b) // 100
+                    if test_amount == 0:
+                        continue
+
+                    # leg 1: token_start -> token_mid on pool1
+                    out1 = self._swap_through_pool(pool1, test_amount, token_start)
+                    if out1 <= 0:
+                        continue
+
+                    # leg 2: token_mid -> token_start on pool2
+                    out2 = self._swap_through_pool(pool2, out1, token_mid)
+                    if out2 <= 0:
+                        continue
+
+                    profit = out2 - test_amount
+                    if profit > 0:
+                        profit_bps = int((profit / test_amount) * 10_000)
+                        route = ArbitrageRoute(
+                            pools=[pool1, pool2],
+                            tokens=[token_start, token_mid, token_start],
+                            expected_profit_bps=profit_bps,
+                        )
+                        route.optimal_amount = self.optimal_arbitrage_amount(route)
+                        route.estimated_profit = self.calculate_route_profit(
+                            route, route.optimal_amount
+                        )
+                        if route.estimated_profit > 0:
+                            routes.append(route)
+
+        routes.sort(key=lambda r: r.estimated_profit, reverse=True)
+        return routes
+
+    def calculate_route_profit(
+        self, route: ArbitrageRoute, amount: int
+    ) -> int:
+        """Calculate the profit of executing an arbitrage route with a given input."""
+        if len(route.pools) < 2 or len(route.tokens) < 3:
+            return 0
+
+        current_amount = amount
+        for i, pool in enumerate(route.pools):
+            token_in = route.tokens[i]
+            current_amount = self._swap_through_pool(pool, current_amount, token_in)
+            if current_amount <= 0:
+                return 0
+
+        return current_amount - amount
+
+    def optimal_arbitrage_amount(self, route: ArbitrageRoute) -> int:
+        """
+        Find the input amount that maximises profit via binary search.
+
+        Searches between 1 and 10% of the smallest pool's reserves.
+        """
+        if not route.pools:
+            return 0
+
+        min_reserve = min(
+            min(p.reserve_a, p.reserve_b) for p in route.pools
+        )
+        upper = min_reserve // 10
+        if upper <= 0:
+            return 0
+
+        lo, hi = 1, upper
+        best_amount = 0
+        best_profit = 0
+
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            profit = self.calculate_route_profit(route, mid)
+
+            if profit > best_profit:
+                best_profit = profit
+                best_amount = mid
+
+            # check gradient: does increasing amount still help?
+            profit_higher = self.calculate_route_profit(route, mid + max(1, mid // 10))
+            if profit_higher > profit:
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        return best_amount
+
+    # -- internal -----------------------------------------------------------
+
+    @staticmethod
+    def _swap_through_pool(
+        pool: PoolState, amount_in: int, token_in: str
+    ) -> int:
+        """Execute a simulated swap through a pool."""
+        if token_in == pool.token_a_mint:
+            return constant_product_output(
+                amount_in, pool.reserve_a, pool.reserve_b, pool.fee_bps
+            )
+        elif token_in == pool.token_b_mint:
+            return constant_product_output(
+                amount_in, pool.reserve_b, pool.reserve_a, pool.fee_bps
+            )
+        return 0
+
+    @staticmethod
+    def _binary_search_depth(
+        reserve_in: int, reserve_out: int, target_impact: float
+    ) -> int:
+        """Binary search for the max trade size within a target price impact."""
+        if reserve_in <= 0 or reserve_out <= 0:
+            return 0
+
+        lo, hi = 0, reserve_in
+        result = 0
+
+        for _ in range(64):  # enough iterations for convergence
+            if lo > hi:
+                break
+            mid = (lo + hi) // 2
+            impact = calculate_price_impact(mid, reserve_in, reserve_out)
+            if impact <= target_impact:
+                result = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        return result
