@@ -159,3 +159,93 @@ class RouteRequest:
 
     def __post_init__(self) -> None:
         if self.amount <= 0:
+            raise ValueError("amount must be positive")
+        if self.max_hops < 1:
+            raise ValueError("max_hops must be >= 1")
+        if not 0.0 <= self.slippage_tolerance <= 1.0:
+            raise ValueError("slippage_tolerance must be in [0, 1]")
+        if self.strategy not in VALID_STRATEGIES:
+            raise ValueError(
+                f"strategy must be one of {VALID_STRATEGIES}, got {self.strategy!r}"
+            )
+
+
+@dataclass
+class BridgeQuote:
+    """A quote from a bridge for a specific transfer."""
+
+    bridge: str
+    input_amount: float
+    output_amount: float
+    fee: float
+    estimated_time: int  # seconds
+    liquidity_depth: float
+    expires_at: float = 0.0  # unix timestamp
+
+    def __post_init__(self) -> None:
+        if self.expires_at == 0.0:
+            self.expires_at = time.time() + 30.0  # 30 second default expiry
+
+    @property
+    def is_expired(self) -> bool:
+        return time.time() > self.expires_at
+
+    @property
+    def slippage(self) -> float:
+        if self.input_amount == 0:
+            return 0.0
+        return 1.0 - (self.output_amount + self.fee) / self.input_amount
+
+
+@dataclass
+class BridgeHealth:
+    """Health status of a bridge."""
+
+    online: bool
+    congestion: float  # 0.0 (none) to 1.0 (fully congested)
+    success_rate: float  # 0.0 to 1.0
+    median_confirm_time: int  # seconds
+
+    @property
+    def is_healthy(self) -> bool:
+        return self.online and self.congestion < 0.8 and self.success_rate > 0.9
+
+    @property
+    def reliability_score(self) -> float:
+        if not self.online:
+            return 0.0
+        return self.success_rate * (1.0 - self.congestion)
+
+
+@dataclass
+class ScoringWeights:
+    """Weights for each dimension of route scoring.  All values in [0, 1]."""
+
+    fees: float = 0.25
+    slippage: float = 0.25
+    speed: float = 0.20
+    reliability: float = 0.20
+    mev_exposure: float = 0.10
+
+    def __post_init__(self) -> None:
+        for name in ("fees", "slippage", "speed", "reliability", "mev_exposure"):
+            val = getattr(self, name)
+            if not 0.0 <= val <= 1.0:
+                raise ValueError(f"{name} weight must be in [0, 1], got {val}")
+
+    @property
+    def total(self) -> float:
+        return self.fees + self.slippage + self.speed + self.reliability + self.mev_exposure
+
+    def normalized(self) -> "ScoringWeights":
+        t = self.total
+        if t == 0:
+            return ScoringWeights(0.2, 0.2, 0.2, 0.2, 0.2)
+        return ScoringWeights(
+            fees=self.fees / t,
+            slippage=self.slippage / t,
+            speed=self.speed / t,
+            reliability=self.reliability / t,
+            mev_exposure=self.mev_exposure / t,
+        )
+
