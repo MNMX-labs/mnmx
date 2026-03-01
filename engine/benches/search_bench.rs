@@ -53,3 +53,68 @@ fn bench_minimax_depth_3(c: &mut Criterion) {
         });
     });
 }
+
+fn bench_minimax_depth_5(c: &mut Criterion) {
+    let state = make_bench_state();
+    let actions = make_bench_actions();
+
+    c.bench_function("minimax_depth_5", |b| {
+        b.iter(|| {
+            let config = SearchConfig {
+                max_depth: 5,
+                alpha_beta_enabled: true,
+                time_limit_ms: 30_000,
+                transposition_enabled: true,
+                move_ordering_enabled: true,
+                ..SearchConfig::default()
+            };
+            let mut engine = MinimaxEngine::new(config);
+            let plan = engine.search(black_box(&state), black_box(&actions));
+            black_box(plan);
+        });
+    });
+}
+
+fn bench_evaluator(c: &mut Criterion) {
+    let state = make_bench_state();
+    let action = ExecutionAction::new(
+        ActionKind::Swap,
+        "SOL",
+        500_000,
+        "USDC",
+        50,
+        "pool_sol_usdc",
+        5000,
+    );
+    let evaluator = PositionEvaluator::new(EvalWeights::default());
+
+    c.bench_function("evaluator", |b| {
+        b.iter(|| {
+            let result = evaluator.evaluate(black_box(&state), black_box(&action));
+            black_box(result);
+        });
+    });
+}
+
+fn bench_move_ordering(c: &mut Criterion) {
+    let state = make_bench_state();
+    let base_actions = make_bench_actions();
+    let orderer = MoveOrderer::new();
+
+    c.bench_function("move_ordering", |b| {
+        b.iter(|| {
+            let mut actions = base_actions.clone();
+            orderer.order_moves(black_box(&mut actions), black_box(&state), 0);
+            black_box(actions);
+        });
+    });
+}
+
+criterion_group!(
+    benches,
+    bench_minimax_depth_3,
+    bench_minimax_depth_5,
+    bench_evaluator,
+    bench_move_ordering
+);
+criterion_main!(benches);
