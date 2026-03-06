@@ -138,3 +138,133 @@ export class SearchStatistics {
     const totalTimeMs = this.lastEventTimestamp - this.firstEventTimestamp;
     const nodesPerSecond =
       totalTimeMs > 0 ? (this.totalNodes / totalTimeMs) * 1000 : 0;
+
+    const ttLookups = this.totalTtHits + this.totalTtMisses;
+    const ttHitRate = ttLookups > 0 ? this.totalTtHits / ttLookups : 0;
+
+    const totalEvaluated = this.totalNodes + this.totalPruned;
+    const pruningRate =
+      totalEvaluated > 0 ? this.totalPruned / totalEvaluated : 0;
+
+    const ebf = this.computeEffectiveBranchingFactor();
+
+    const depthReports = this.buildDepthReports();
+
+    return {
+      totalNodes: this.totalNodes,
+      totalPruned: this.totalPruned,
+      pruningRate,
+      totalTtHits: this.totalTtHits,
+      totalTtMisses: this.totalTtMisses,
+      ttHitRate,
+      effectiveBranchingFactor: ebf,
+      maxDepthReached: this.maxDepthSeen,
+      depthReports,
+      totalTimeMs,
+      nodesPerSecond,
+      bestMoveChanges: this.totalBestMoveChanges,
+    };
+  }
+
+  /**
+   * Reset all statistics for a new search session.
+   */
+  reset(): void {
+    this.events.length = 0;
+    this.depthNodes.clear();
+    this.depthPruned.clear();
+    this.depthTtHits.clear();
+    this.depthTtMisses.clear();
+    this.depthBestMoveChanges.clear();
+    this.depthFirstTimestamp.clear();
+    this.depthLastTimestamp.clear();
+    this.totalNodes = 0;
+    this.totalPruned = 0;
+    this.totalTtHits = 0;
+    this.totalTtMisses = 0;
+    this.totalBestMoveChanges = 0;
+    this.maxDepthSeen = 0;
+    this.firstEventTimestamp = 0;
+    this.lastEventTimestamp = 0;
+  }
+
+  /**
+   * Return the raw event log for external analysis.
+   */
+  getRawEvents(): ReadonlyArray<SearchEvent> {
+    return this.events;
+  }
+
+  // ── Private ────────────────────────────────────────────────────────
+
+  private increment(map: Map<number, number>, key: number): void {
+    map.set(key, (map.get(key) ?? 0) + 1);
+  }
+
+  private buildDepthReports(): DepthReport[] {
+    const reports: DepthReport[] = [];
+
+    for (let d = 0; d <= this.maxDepthSeen; d++) {
+      const nodesVisited = this.depthNodes.get(d) ?? 0;
+      if (nodesVisited === 0 && (this.depthPruned.get(d) ?? 0) === 0) {
+        continue;
+      }
+
+      const startTimestamp = this.depthFirstTimestamp.get(d) ?? 0;
+      const endTimestamp = this.depthLastTimestamp.get(d) ?? 0;
+
+      reports.push({
+        depth: d,
+        nodesVisited,
+        nodesPruned: this.depthPruned.get(d) ?? 0,
+        ttHits: this.depthTtHits.get(d) ?? 0,
+        ttMisses: this.depthTtMisses.get(d) ?? 0,
+        bestMoveChanges: this.depthBestMoveChanges.get(d) ?? 0,
+        startTimestamp,
+        endTimestamp,
+        durationMs: endTimestamp - startTimestamp,
+      });
+    }
+
+    return reports;
+  }
+
+  /**
+   * Compute the effective branching factor (EBF) using the ratio of
+   * nodes at successive depths. The EBF is the geometric mean of
+   * depth-to-depth node count ratios.
+   *
+   * For a tree with branching factor b and depth d, the total nodes
+   * are approximately b^d. The EBF is the value of b that best fits
+   * the observed data.
+   */
+  private computeEffectiveBranchingFactor(): number {
+    const depthCounts: number[] = [];
+
+    for (let d = 0; d <= this.maxDepthSeen; d++) {
+      const count = this.depthNodes.get(d) ?? 0;
+      if (count > 0) {
+        depthCounts.push(count);
+      }
+    }
+
+    if (depthCounts.length < 2) return 0;
+
+    let logSum = 0;
+    let ratioCount = 0;
+
+    for (let i = 1; i < depthCounts.length; i++) {
+      const prev = depthCounts[i - 1]!;
+      const curr = depthCounts[i]!;
+
+      if (prev > 0 && curr > 0) {
+        logSum += Math.log(curr / prev);
+        ratioCount++;
+      }
+    }
+
+    if (ratioCount === 0) return 0;
+
+    return Math.exp(logSum / ratioCount);
+  }
+}
