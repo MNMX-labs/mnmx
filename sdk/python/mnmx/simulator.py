@@ -74,6 +74,8 @@ class Simulator:
         self, state: OnChainState, action: ExecutionAction
     ) -> SimulationResult:
         """Simulate any supported action type against the given state."""
+        self._validate_action(action)
+
         if action.kind == ActionKind.SWAP:
             return self.simulate_swap(state, action)
         if action.kind == ActionKind.ADD_LIQUIDITY:
@@ -90,6 +92,18 @@ class Simulator:
             success=False,
             error=f"Unsupported action kind: {action.kind.value}",
         )
+
+    @staticmethod
+    def _validate_action(action: ExecutionAction) -> None:
+        """Validate action parameters before simulation."""
+        if action.amount_in < 0:
+            raise SimulationError(f"Negative amount_in: {action.amount_in}")
+        if action.amount_in == 0 and action.kind != ActionKind.NO_OP:
+            raise SimulationError("Non-noop action with zero amount_in")
+        if action.slippage_bps < 0 or action.slippage_bps > 10_000:
+            raise SimulationError(
+                f"Invalid slippage_bps: {action.slippage_bps} (must be 0-10000)"
+            )
 
     def simulate_swap(
         self, state: OnChainState, action: ExecutionAction
