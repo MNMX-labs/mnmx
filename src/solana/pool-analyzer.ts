@@ -251,3 +251,232 @@ export class PoolAnalyzer {
           if (pool3.address === pool1.address || pool3.address === pool2.address) {
             continue;
           }
+
+          const endToken =
+            pool3.tokenMintA === midToken
+              ? pool3.tokenMintB
+              : pool3.tokenMintA;
+
+          if (endToken !== pool1.tokenMintA) continue;
+
+          const route = this.evaluate3HopRoute(pool1, pool2, pool3);
+          if (route !== null && route.expectedProfit > 0n) {
+            routes.push(route);
+          }
+        }
+      }
+    }
+
+    // Sort by expected profit descending
+    routes.sort((a, b) => {
+      if (b.expectedProfit > a.expectedProfit) return 1;
+      if (b.expectedProfit < a.expectedProfit) return -1;
+      return 0;
+    });
+
+    return routes;
+  }
+
+  // ── Private Helpers ──────────────────────────────────────────────
+
+  /**
+   * Simulate a swap through a constant-product pool.
+   * Returns the output amount after fees.
+   */
+  private simulateSwap(
+    inputAmount: bigint,
+    inputReserve: bigint,
+    outputReserve: bigint,
+    feeRateBps: number,
+  ): bigint {
+    if (inputAmount <= 0n) return 0n;
+
+    const feeMultiplier = 10_000n - BigInt(feeRateBps);
+    const effectiveInput = (inputAmount * feeMultiplier) / 10_000n;
+    const numerator = effectiveInput * outputReserve;
+    const denominator = inputReserve + effectiveInput;
+
+    return numerator / denominator;
+  }
+
+  /**
+   * Determine which reserves are input/output given the direction
+   * of trade through a pool.
+   */
+  private getSwapDirection(
+    pool: PoolAnalysis,
+    inputMint: string,
+  ): { inputReserve: bigint; outputReserve: bigint; outputMint: string } {
+    if (inputMint === pool.tokenMintA) {
+      return {
+        inputReserve: pool.reserveA,
+        outputReserve: pool.reserveB,
+        outputMint: pool.tokenMintB,
+      };
+    }
+    return {
+      inputReserve: pool.reserveB,
+      outputReserve: pool.reserveA,
+      outputMint: pool.tokenMintA,
+    };
+  }
+
+  private evaluate2HopRoute(
+    pool1: PoolAnalysis,
+    pool2: PoolAnalysis,
+  ): ArbitrageRoute | null {
+    const startToken = pool1.tokenMintA;
+
+    // Find optimal input via binary search
+    const optimalInput = this.findOptimalInput(
+      startToken,
+      [pool1, pool2],
+      pool1.reserveA / 100n, // search up to 1% of reserve
+    );
+
+    if (optimalInput <= 0n) return null;
+
+    const dir1 = this.getSwapDirection(pool1, startToken);
+    const hop1Output = this.simulateSwap(
+      optimalInput,
+      dir1.inputReserve,
+      dir1.outputReserve,
+      pool1.feeRateBps,
+    );
+
+    const dir2 = this.getSwapDirection(pool2, dir1.outputMint);
+    const hop2Output = this.simulateSwap(
+      hop1Output,
+      dir2.inputReserve,
+      dir2.outputReserve,
+      pool2.feeRateBps,
+    );
+
+    const profit = hop2Output - optimalInput;
+    if (profit <= 0n) return null;
+
+    return {
+      path: [pool1.address, pool2.address],
+      tokenPath: [startToken, dir1.outputMint, startToken],
+      expectedProfit: profit,
+      totalFeeBps: pool1.feeRateBps + pool2.feeRateBps,
+      optimalInput,
+    };
+  }
+
+  private evaluate3HopRoute(
+    pool1: PoolAnalysis,
+    pool2: PoolAnalysis,
+    pool3: PoolAnalysis,
+  ): ArbitrageRoute | null {
+    const startToken = pool1.tokenMintA;
+
+    const optimalInput = this.findOptimalInput(
+      startToken,
+      [pool1, pool2, pool3],
+      pool1.reserveA / 100n,
+    );
+
+    if (optimalInput <= 0n) return null;
+
+    const dir1 = this.getSwapDirection(pool1, startToken);
+    const hop1Output = this.simulateSwap(
+      optimalInput,
+      dir1.inputReserve,
+      dir1.outputReserve,
+      pool1.feeRateBps,
+    );
+
+    const dir2 = this.getSwapDirection(pool2, dir1.outputMint);
+    const hop2Output = this.simulateSwap(
+      hop1Output,
+      dir2.inputReserve,
+      dir2.outputReserve,
+      pool2.feeRateBps,
+    );
+
+    const dir3 = this.getSwapDirection(pool3, dir2.outputMint);
+    const hop3Output = this.simulateSwap(
+      hop2Output,
+      dir3.inputReserve,
+      dir3.outputReserve,
+      pool3.feeRateBps,
+    );
+
+    const profit = hop3Output - optimalInput;
+    if (profit <= 0n) return null;
+
+    return {
+      path: [pool1.address, pool2.address, pool3.address],
+      tokenPath: [startToken, dir1.outputMint, dir2.outputMint, startToken],
+      expectedProfit: profit,
+      totalFeeBps: pool1.feeRateBps + pool2.feeRateBps + pool3.feeRateBps,
+      optimalInput,
+    };
+  }
+
+  /**
+   * Binary search for the input amount that maximizes profit
+   * through a multi-hop route.
+   */
+  private findOptimalInput(
+    startToken: string,
+    pools: PoolAnalysis[],
+    maxInput: bigint,
+  ): bigint {
+    if (maxInput <= 0n) return 0n;
+
+    let low = 1n;
+    let high = maxInput;
+    let bestInput = 0n;
+    let bestProfit = 0n;
+
+    const iterations = 64;
+    for (let i = 0; i < iterations && low <= high; i++) {
+      const mid = (low + high) / 2n;
+      const profit = this.simulateRoute(startToken, pools, mid);
+
+      if (profit > bestProfit) {
+        bestProfit = profit;
+        bestInput = mid;
+      }
+
+      // Check if increasing input still improves profit
+      const profitHigher = this.simulateRoute(startToken, pools, mid + 1n);
+      if (profitHigher > profit) {
+        low = mid + 1n;
+      } else {
+        high = mid - 1n;
+      }
+    }
+
+    return bestInput;
+  }
+
+  /**
+   * Simulate a complete multi-hop route and return the net profit.
+   */
+  private simulateRoute(
+    startToken: string,
+    pools: PoolAnalysis[],
+    inputAmount: bigint,
+  ): bigint {
+    let currentAmount = inputAmount;
+    let currentToken = startToken;
+
+    for (const pool of pools) {
+      const dir = this.getSwapDirection(pool, currentToken);
+      currentAmount = this.simulateSwap(
+        currentAmount,
+        dir.inputReserve,
+        dir.outputReserve,
+        pool.feeRateBps,
+      );
+      currentToken = dir.outputMint;
+
+      if (currentAmount <= 0n) return -inputAmount;
+    }
+
+    return currentAmount - inputAmount;
+  }
+}

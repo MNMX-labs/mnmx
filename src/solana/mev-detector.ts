@@ -147,3 +147,170 @@ export class MevDetector {
     poolState?: PoolState,
   ): MevThreat | null {
     if (!['swap', 'liquidate'].includes(action.kind)) return null;
+
+    const tradeRatio = poolState
+      ? this.computeTradeRatio(action.amount, poolState)
+      : 0;
+
+    // Look for pending TXs targeting the same pool
+    const competingTxCount = pendingTxs.filter((tx) =>
+      this.isTargetingPool(tx, action.pool),
+    ).length;
+
+    if (tradeRatio < MIN_THREAT_RATIO && competingTxCount === 0) return null;
+
+    const congestionFactor = Math.min(competingTxCount / 10, 1);
+    const probability = Math.min(
+      this.logisticProbability(tradeRatio, 0.02, 150) * 0.6 +
+        congestionFactor * 0.4,
+      0.8,
+    );
+
+    const estimatedCost = BigInt(
+      Math.floor(Number(action.amount) * tradeRatio * 0.2),
+    );
+
+    return {
+      kind: 'frontrun',
+      probability,
+      estimatedCost,
+      sourceAddress: this.identifyLikelyBot(pendingTxs, 'frontrun'),
+      relatedPool: action.pool,
+      description: `Frontrun risk: ${competingTxCount} competing txs targeting same pool`,
+    };
+  }
+
+  /**
+   * Analyse the risk of JIT (Just-In-Time) liquidity provision.
+   *
+   * A JIT provider adds concentrated liquidity in the tick range of
+   * the victim's swap, captures the swap fees, then removes liquidity
+   * in the same block.  This reduces effective output for the victim.
+   */
+  analyzeJitRisk(
+    action: ExecutionAction,
+    poolState: PoolState,
+  ): MevThreat | null {
+    if (action.kind !== 'swap') return null;
+
+    // JIT is only relevant for concentrated-liquidity pools
+    if (!poolState.tickSpacing) return null;
+
+    const tradeRatio = this.computeTradeRatio(action.amount, poolState);
+    if (tradeRatio < 0.005) return null;
+
+    // JIT probability increases with trade size and fee rate
+    const feeFactor = poolState.feeBps / 100; // higher fees = more attractive for JIT
+    const probability = Math.min(
+      this.logisticProbability(tradeRatio, 0.01, 100) * 0.7 +
+        feeFactor * 0.1,
+      0.6,
+    );
+
+    const estimatedCost = BigInt(
+      Math.floor(Number(action.amount) * (poolState.feeBps / 10_000) * 0.5),
+    );
+
+    return {
+      kind: 'jit',
+      probability,
+      estimatedCost,
+      sourceAddress: 'JITProvider1111111111111111111111111111111',
+      relatedPool: action.pool,
+      description: `JIT liquidity risk on CLMM pool with ${poolState.feeBps}bps fee`,
+    };
+  }
+
+  /**
+   * Estimate the absolute cost of an MEV threat in token units.
+   */
+  estimateMevCost(threat: MevThreat, actionAmount: bigint): bigint {
+    return BigInt(
+      Math.floor(Number(actionAmount) * threat.probability * Number(threat.estimatedCost) / Number(actionAmount || 1n)),
+    );
+  }
+
+  // ── Private ─────────────────────────────────────────────────────
+
+  private analyzeBackrunRisk(
+    action: ExecutionAction,
+    pendingTxs: PendingTx[],
+    poolState?: PoolState,
+  ): MevThreat | null {
+    if (action.kind !== 'swap') return null;
+
+    const tradeRatio = poolState
+      ? this.computeTradeRatio(action.amount, poolState)
+      : 0;
+
+    if (tradeRatio < 0.005) return null;
+
+    const probability = Math.min(
+      this.logisticProbability(tradeRatio, 0.02, 120) * 0.8,
+      0.5,
+    );
+
+    const estimatedCost = BigInt(
+      Math.floor(Number(action.amount) * tradeRatio * 0.1),
+    );
+
+    return {
+      kind: 'backrun',
+      probability,
+      estimatedCost,
+      sourceAddress: this.identifyLikelyBot(pendingTxs, 'backrun'),
+      relatedPool: action.pool,
+      description: `Backrun arbitrage risk after large swap (ratio ${(tradeRatio * 100).toFixed(3)}%)`,
+    };
+  }
+
+  private computeTradeRatio(amount: bigint, pool: PoolState): number {
+    const totalReserves = pool.reserveA + pool.reserveB;
+    if (totalReserves === 0n) return 0;
+    return Number(amount) / Number(totalReserves);
+  }
+
+  /**
+   * Logistic function mapping a value to a probability in (0, 1).
+   * `midpoint` is the value at which probability = 0.5.
+   * `steepness` controls how sharply probability transitions.
+   */
+  private logisticProbability(
+    value: number,
+    midpoint: number,
+    steepness: number,
+  ): number {
+    return 1 / (1 + Math.exp(-steepness * (value - midpoint)));
+  }
+
+  private estimateSandwichCost(amount: bigint, tradeRatio: number): bigint {
+    // Quadratic cost model: cost = amount * ratio^2 * scaling_factor
+    const scalingFactor = 5;
+    const cost = Number(amount) * tradeRatio * tradeRatio * scalingFactor;
+    return BigInt(Math.floor(Math.max(cost, 1)));
+  }
+
+  private hasSuspectedBotActivity(pendingTxs: PendingTx[]): boolean {
+    return pendingTxs.some(
+      (tx) =>
+        SUSPECTED_SANDWICH_WALLETS.has(tx.fromAddress) ||
+        KNOWN_MEV_PROGRAM_IDS.has(tx.programId),
+    );
+  }
+
+  private isTargetingPool(tx: PendingTx, pool: string): boolean {
+    return tx.toAddress === pool || tx.programId === pool;
+  }
+
+  private identifyLikelyBot(
+    pendingTxs: PendingTx[],
+    _threatKind: string,
+  ): string {
+    const botTx = pendingTxs.find(
+      (tx) =>
+        SUSPECTED_SANDWICH_WALLETS.has(tx.fromAddress) ||
+        KNOWN_MEV_PROGRAM_IDS.has(tx.programId),
+    );
+    return botTx?.fromAddress ?? 'UnknownBot11111111111111111111111111111111';
+  }
+}
