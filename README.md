@@ -121,3 +121,64 @@ The adversarial model controls worst-case estimation. Every quoted value gets mu
 | `priceMovement` | 0.5% | Token price moves 0.5% against you |
 
 Higher multipliers = more conservative routing. The engine will prefer routes with lower variance over routes with higher expected value. This is appropriate when protecting large transfers.
+
+### Engine Performance
+
+| Property | Value | Context |
+|----------|-------|---------|
+| Candidate paths | 10-50 | Per chain pair, across all bridge combinations |
+| Search nodes | 500-5,000 | Alpha-beta pruning eliminates 90%+ of the search space |
+| Search latency | <10 ms | Rust engine, cache-optimized |
+| Supported chains | 8 | Ethereum, Solana, Arbitrum, Base, Polygon, BNB, Optimism, Avalanche |
+| Supported bridges | 4 | Wormhole, deBridge, LayerZero, Allbridge |
+
+## Quick Start
+
+```bash
+git clone https://github.com/MEMX-labs/MNMX.git
+cd MNMX
+npm ci
+npm run build
+npm test
+```
+
+## Usage
+
+```typescript
+import { MnmxRouter } from '@mnmx/core';
+
+const router = new MnmxRouter({
+  strategy: 'minimax',
+  slippageTolerance: 0.5,
+});
+
+// Find the optimal route
+const route = await router.findRoute({
+  from: { chain: 'ethereum', token: 'ETH', amount: '1.0' },
+  to:   { chain: 'solana',   token: 'SOL' },
+});
+
+console.log(route.path);              // Route hops
+console.log(route.expectedOutput);    // Best-case output
+console.log(route.guaranteedMinimum); // Minimax worst-case output
+console.log(route.estimatedTime);     // Expected transfer time
+console.log(route.totalFees);         // Total fees across all hops
+
+// Execute the route
+const result = await router.execute(route, { signer });
+console.log(result.txHash);
+console.log(result.actualOutput);
+```
+
+### Strategy Profiles
+
+```typescript
+// Minimax (default) -- best guaranteed minimum outcome
+const router = new MnmxRouter({ strategy: 'minimax' });
+
+// Cheapest -- minimize total fees
+const router = new MnmxRouter({ strategy: 'cheapest' });
+
+// Fastest -- minimize transfer time
+const router = new MnmxRouter({ strategy: 'fastest' });
+
