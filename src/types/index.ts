@@ -534,3 +534,12 @@ export const STRATEGY_WEIGHTS: Record<Strategy, ScoringWeights> = {
     mevExposure: 0.2,
   },
 };
+
+/** Bridge health status */
+export interface BridgeHealth {
+  bridge: string;
+  status: "online" | "degraded" | "offline";
+  latency: number;
+  lastChecked: number;
+  successRate: number;
+}
