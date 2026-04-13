@@ -1,8 +1,13 @@
 [package]
 name = "mnmx-engine"
-version = "0.1.0"
-edition = "2021"
-description = "MNMX cross-chain routing engine using minimax search"
+description = "MNMX cross-chain routing engine using minimax search with alpha-beta pruning"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

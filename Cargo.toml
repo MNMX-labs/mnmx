@@ -1,0 +1,22 @@
+[workspace]
+members = ["engine"]
+resolver = "2"
+
+[workspace.package]
+version = "0.4.1"
+edition = "2021"
+authors = ["MNMX Protocol"]
+license = "MIT"
+repository = "https://github.com/MEMX-labs/mnmx"
+homepage = "https://mnmx.app"
+readme = "README.md"
+rust-version = "1.78"
+description = "Worst-case optimized cross-chain routing engine"
+keywords = ["cross-chain", "routing", "minimax", "defi", "bridge"]
+categories = ["cryptography", "network-programming"]
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
+opt-level = 3
