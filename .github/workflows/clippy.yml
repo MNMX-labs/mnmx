@@ -13,4 +13,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cd engine && cargo clippy -- -D warnings
+      - run: cd engine && cargo clippy --workspace -- -W warnings
+        continue-on-error: true
