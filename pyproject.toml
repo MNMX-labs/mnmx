@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mnmx"
+version = "0.4.1"
+description = "Worst-case optimized cross-chain routing engine"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "MNMX Protocol" }]
+keywords = ["cross-chain", "routing", "minimax", "defi", "bridge"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Topic :: Software Development :: Libraries",
+    "License :: OSI Approved :: MIT License",
+]
+
+[project.urls]
+Homepage = "https://mnmx.app"
+Documentation = "https://mnmx.app/docs"
+Repository = "https://github.com/MEMX-labs/mnmx"
+Issues = "https://github.com/MEMX-labs/mnmx/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sdk/python/mnmx"]
