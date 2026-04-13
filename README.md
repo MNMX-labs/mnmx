@@ -332,6 +332,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 - Documentation: [mnmx.app/docs](https://mnmx.app/docs)
 - GitHub: [github.com/MEMX-labs/mnmx](https://github.com/MEMX-labs/mnmx)
 - Twitter: [x.com/mnmxapp](https://x.com/mnmxapp)
+- Ticker: $MNMX
 
 ## License
 
